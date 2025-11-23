@@ -91,7 +91,7 @@ async function listFilesInFolder(
   // Limitar profundidad para evitar recursión infinita y timeouts
   if (depth > maxDepth) {
     console.warn(`Profundidad máxima alcanzada en ${parentPath}`)
-    return videos
+    return files
   }
 
   try {
