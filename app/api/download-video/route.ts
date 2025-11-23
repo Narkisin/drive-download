@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
     const drive = google.drive({ version: 'v3', auth })
 
     // Obtener el archivo y generar URL de descarga
-    const file: { data: { name?: string; mimeType?: string; size?: string } } = await drive.files.get({
+    const file: any = await drive.files.get({
       fileId: videoId,
       fields: 'name, mimeType, size',
     })
