@@ -47,13 +47,13 @@ export async function POST(request: NextRequest) {
     const drive = google.drive({ version: 'v3', auth })
 
     // Obtener el archivo y generar URL de descarga
-    const file = await drive.files.get({
+    const file: { data: { name?: string; mimeType?: string; size?: string } } = await drive.files.get({
       fileId: videoId,
       fields: 'name, mimeType, size',
     })
 
     // Obtener el stream de descarga
-    const response = await drive.files.get(
+    const response: { data: any } = await drive.files.get(
       {
         fileId: videoId,
         alt: 'media',
@@ -63,8 +63,8 @@ export async function POST(request: NextRequest) {
 
     // Convertir el stream a buffer
     const chunks: Buffer[] = []
-    for await (const chunk of response.data) {
-      chunks.push(chunk)
+    for await (const chunk of response.data as AsyncIterable<Buffer>) {
+      chunks.push(Buffer.from(chunk))
     }
     const buffer = Buffer.concat(chunks)
 

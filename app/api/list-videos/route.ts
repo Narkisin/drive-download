@@ -73,7 +73,7 @@ async function listVideosInFolder(
     while (true) {
       const query = `'${folderId}' in parents and trashed=false`
       
-      const response = await drive.files.list({
+      const response: { data: { files?: any[]; nextPageToken?: string } } = await drive.files.list({
         q: query,
         pageSize: 100,
         fields: 'nextPageToken, files(id, name, mimeType, size, webViewLink)',
