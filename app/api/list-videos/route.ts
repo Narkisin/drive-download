@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { google } from 'googleapis'
 
+// Configurar timeout máximo para Vercel (60 segundos)
+export const maxDuration = 60
+
 const VIDEO_MIMETYPES = [
   'video/mp4',
   'video/avi',
@@ -60,16 +63,26 @@ async function getFolderName(drive: any, folderId: string): Promise<string> {
 async function listVideosInFolder(
   drive: any,
   folderId: string,
-  parentPath: string = ''
+  parentPath: string = '',
+  depth: number = 0,
+  maxDepth: number = 10
 ): Promise<any[]> {
   const videos: any[] = []
+
+  // Limitar profundidad para evitar recursión infinita y timeouts
+  if (depth > maxDepth) {
+    console.warn(`Profundidad máxima alcanzada en ${parentPath}`)
+    return videos
+  }
 
   try {
     const folderName = await getFolderName(drive, folderId)
     const currentPath = parentPath ? `${parentPath}/${folderName}` : folderName
 
     let pageToken: string | undefined = undefined
+    const foldersToProcess: { id: string; path: string }[] = []
 
+    // Primero, recopilar todos los archivos y carpetas
     while (true) {
       const query = `'${folderId}' in parents and trashed=false`
       
@@ -85,12 +98,11 @@ async function listVideosInFolder(
       for (const item of items) {
         const mimeType = item.mimeType || ''
 
-        // Si es una carpeta, explorarla recursivamente
+        // Si es una carpeta, agregarla a la lista para procesar después
         if (mimeType === 'application/vnd.google-apps.folder') {
-          const subfolderVideos = await listVideosInFolder(drive, item.id, currentPath)
-          videos.push(...subfolderVideos)
+          foldersToProcess.push({ id: item.id, path: currentPath })
         }
-        // Si es un video, agregarlo a la lista
+        // Si es un video, agregarlo directamente
         else if (isVideo(mimeType)) {
           videos.push({
             id: item.id,
@@ -108,6 +120,19 @@ async function listVideosInFolder(
         break
       }
     }
+
+    // Procesar carpetas en paralelo (limitado a 5 a la vez para evitar demasiadas solicitudes)
+    const batchSize = 5
+    for (let i = 0; i < foldersToProcess.length; i += batchSize) {
+      const batch = foldersToProcess.slice(i, i + batchSize)
+      const subfolderPromises = batch.map(folder => 
+        listVideosInFolder(drive, folder.id, folder.path, depth + 1, maxDepth)
+      )
+      const subfolderResults = await Promise.all(subfolderPromises)
+      subfolderResults.forEach(subfolderVideos => {
+        videos.push(...subfolderVideos)
+      })
+    }
   } catch (error: any) {
     console.error(`Error al acceder a la carpeta ${folderId}:`, error.message)
   }
@@ -116,6 +141,9 @@ async function listVideosInFolder(
 }
 
 export async function POST(request: NextRequest) {
+  const startTime = Date.now()
+  const TIMEOUT_MS = 55000 // 55 segundos (dejar margen antes del límite de 60s)
+
   try {
     const { folderId } = await request.json()
 
@@ -133,11 +161,38 @@ export async function POST(request: NextRequest) {
     }
 
     const drive = google.drive({ version: 'v3', auth })
-    const videos = await listVideosInFolder(drive, folderId)
+    
+    // Función para verificar timeout
+    const checkTimeout = () => {
+      if (Date.now() - startTime > TIMEOUT_MS) {
+        throw new Error('Tiempo de espera agotado. La carpeta contiene demasiados archivos. Intenta con una carpeta más pequeña o más específica.')
+      }
+    }
 
-    return NextResponse.json({ videos, success: true })
+    // Listar videos con límites de tiempo
+    const videos = await listVideosInFolder(drive, folderId)
+    checkTimeout()
+
+    return NextResponse.json({ 
+      videos, 
+      success: true,
+      count: videos.length,
+      processingTime: Date.now() - startTime
+    })
   } catch (error: any) {
     console.error('Error al listar videos:', error)
+    
+    // Si es un timeout, devolver un error más descriptivo
+    if (error.message?.includes('Tiempo de espera') || Date.now() - startTime > TIMEOUT_MS) {
+      return NextResponse.json(
+        { 
+          error: 'La búsqueda está tardando demasiado. Por favor, intenta con una carpeta más pequeña o específica.',
+          timeout: true
+        },
+        { status: 504 }
+      )
+    }
+
     return NextResponse.json(
       { error: error.message || 'Error al listar videos' },
       { status: 500 }

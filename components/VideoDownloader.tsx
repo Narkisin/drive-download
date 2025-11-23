@@ -97,17 +97,39 @@ export default function VideoDownloader() {
     setFolderStructure({})
 
     try {
+      // Crear un AbortController para manejar timeout
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 60000) // 60 segundos
+
       const response = await fetch('/api/list-videos', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ folderId }),
+        signal: controller.signal,
       })
+      
+      clearTimeout(timeoutId)
 
-      const data = await response.json()
+      // Si la respuesta no es ok, intentar parsear el JSON del error
+      let data
+      try {
+        data = await response.json()
+      } catch {
+        // Si no se puede parsear JSON, crear un objeto de error
+        if (response.status === 504) {
+          data = { error: 'Tiempo de espera agotado. La carpeta contiene demasiados archivos. Intenta con una carpeta más pequeña.', timeout: true }
+        } else {
+          data = { error: 'Error al procesar la respuesta del servidor' }
+        }
+      }
 
       if (!response.ok) {
+        // Manejo especial para timeouts
+        if (response.status === 504 || data.timeout) {
+          throw new Error('⏱️ La búsqueda está tardando demasiado. Por favor, intenta con una carpeta más pequeña o más específica. La carpeta puede contener demasiados archivos o subcarpetas.')
+        }
         throw new Error(data.error || 'Error al listar los videos')
       }
 
@@ -123,8 +145,18 @@ export default function VideoDownloader() {
       setFolderStructure(structure)
       setStats(calculateStats(data.videos || []))
       setSuccess(true)
+      
+      // Mostrar tiempo de procesamiento si está disponible
+      if (data.processingTime) {
+        console.log(`Búsqueda completada en ${(data.processingTime / 1000).toFixed(2)} segundos`)
+      }
     } catch (err: any) {
-      setError(err.message || 'Error al buscar videos')
+      // Manejo de errores de timeout del cliente
+      if (err.name === 'TimeoutError' || err.name === 'AbortError') {
+        setError('⏱️ Tiempo de espera agotado. La carpeta contiene demasiados archivos. Intenta con una carpeta más pequeña o específica.')
+      } else {
+        setError(err.message || 'Error al buscar videos')
+      }
       setIsAuthenticated(false)
     } finally {
       setLoading(false)
@@ -149,9 +181,31 @@ export default function VideoDownloader() {
           })
 
           if (!response.ok) {
-            throw new Error(`Error al descargar ${video.name}`)
+            let errorMessage = `Error al descargar ${video.name}`
+            try {
+              const errorData = await response.json()
+              errorMessage = errorData.error || errorMessage
+            } catch {
+              // Si no se puede parsear, usar mensaje genérico
+            }
+            throw new Error(errorMessage)
           }
 
+          // Verificar si es una URL de descarga directa
+          const contentType = response.headers.get('content-type')
+          
+          if (contentType?.includes('application/json')) {
+            const data = await response.json()
+            if (data.downloadUrl) {
+              // Abrir URL de descarga directa en nueva pestaña
+              window.open(data.downloadUrl, '_blank')
+              // Pequeña pausa entre descargas para evitar saturar el navegador
+              await new Promise(resolve => setTimeout(resolve, 500))
+              continue
+            }
+          }
+
+          // Descarga a través del servidor (blob)
           const blob = await response.blob()
           const url = window.URL.createObjectURL(blob)
           const a = document.createElement('a')
@@ -161,8 +215,12 @@ export default function VideoDownloader() {
           a.click()
           window.URL.revokeObjectURL(url)
           document.body.removeChild(a)
-        } catch (err) {
+          
+          // Pequeña pausa entre descargas
+          await new Promise(resolve => setTimeout(resolve, 500))
+        } catch (err: any) {
           console.error(`Error descargando ${video.name}:`, err)
+          // Continuar con el siguiente video en lugar de detenerse
         }
       }
     } catch (err: any) {

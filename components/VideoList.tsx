@@ -49,9 +49,31 @@ export default function VideoList({ folderStructure, formatSize }: VideoListProp
       })
 
       if (!response.ok) {
-        throw new Error('Error al descargar el video')
+        // Intentar obtener mensaje de error del servidor
+        let errorMessage = 'Error al descargar el video'
+        try {
+          const errorData = await response.json()
+          errorMessage = errorData.error || errorMessage
+        } catch {
+          // Si no se puede parsear, usar mensaje genérico
+        }
+        throw new Error(errorMessage)
       }
 
+      // Verificar si la respuesta es una redirección o JSON con URL directa
+      const contentType = response.headers.get('content-type')
+      
+      if (response.redirected || contentType?.includes('application/json')) {
+        // Si es JSON, significa que tenemos una URL de descarga directa
+        const data = await response.json()
+        if (data.downloadUrl) {
+          // Abrir URL de descarga directa
+          window.open(data.downloadUrl, '_blank')
+          return
+        }
+      }
+
+      // Si es un blob (descarga a través del servidor)
       const blob = await response.blob()
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -61,9 +83,9 @@ export default function VideoList({ folderStructure, formatSize }: VideoListProp
       a.click()
       window.URL.revokeObjectURL(url)
       document.body.removeChild(a)
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error descargando video:', error)
-      alert('Error al descargar el video. Por favor, intenta de nuevo.')
+      alert(`Error al descargar el video: ${error.message || 'Error desconocido'}\n\nPor favor, intenta de nuevo o verifica que tienes permisos para descargar este archivo.`)
     }
   }
 
