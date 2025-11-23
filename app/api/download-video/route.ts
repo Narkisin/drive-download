@@ -49,48 +49,76 @@ export async function POST(request: NextRequest) {
 
     const drive = google.drive({ version: 'v3', auth })
 
-    // Obtener información del archivo, incluyendo URL de descarga directa
+    // Obtener información del archivo, incluyendo el link de descarga directa
     const file: any = await drive.files.get({
       fileId: videoId,
-      fields: 'name, mimeType, size, webContentLink',
+      fields: 'name, mimeType, size, webContentLink, webViewLink',
     })
 
-    // Intentar usar URL de descarga directa si está disponible
+    // Intentar obtener el link de descarga directa de Google Drive
+    let downloadUrl: string | null = null
+
+    // Opción 1: Usar webContentLink si está disponible
     if (file.data.webContentLink) {
       try {
         // Obtener token de acceso
         const tokenResponse = await auth.getAccessToken()
-        const accessToken = tokenResponse.token || tokenResponse
+        const accessToken = typeof tokenResponse === 'string' ? tokenResponse : tokenResponse.token
 
-        // Generar URL de descarga directa con token
-        const downloadUrl = `${file.data.webContentLink}&access_token=${accessToken}`
-        
-        // Devolver la URL para descarga directa
-        return NextResponse.json({
-          downloadUrl,
-          fileName: fileName || file.data.name || 'video',
-          useDirectDownload: true,
-          success: true,
-        })
+        if (accessToken) {
+          // Generar URL de descarga directa con token de acceso
+          // webContentLink ya tiene el formato correcto, solo agregamos el token
+          downloadUrl = `${file.data.webContentLink}&access_token=${accessToken}`
+        }
       } catch (tokenError) {
-        console.error('Error obteniendo token para descarga directa:', tokenError)
-        // Continuar con método alternativo
+        console.error('Error obteniendo token:', tokenError)
       }
     }
 
-    // Método alternativo: descargar a través del servidor (para archivos pequeños/medianos)
+    // Opción 2: Si no hay webContentLink, generar URL de descarga usando la API
+    if (!downloadUrl) {
+      try {
+        // Generar URL de descarga directa usando la API
+        // Esto funciona incluso sin webContentLink
+        const tokenResponse = await auth.getAccessToken()
+        const accessToken = typeof tokenResponse === 'string' ? tokenResponse : tokenResponse.token
+
+        if (accessToken) {
+          // URL base para descargar archivos de Google Drive
+          downloadUrl = `https://www.googleapis.com/drive/v3/files/${videoId}?alt=media&access_token=${accessToken}`
+        }
+      } catch (tokenError) {
+        console.error('Error generando URL de descarga:', tokenError)
+      }
+    }
+
+    // Si tenemos una URL de descarga, devolverla para descarga directa desde el navegador
+    if (downloadUrl) {
+      return NextResponse.json({
+        downloadUrl,
+        fileName: fileName || file.data.name || 'video',
+        mimeType: file.data.mimeType || 'video/mp4',
+        useDirectDownload: true,
+        success: true,
+        message: 'URL de descarga directa generada. El archivo se descargará desde Google Drive.',
+      })
+    }
+
+    // Método alternativo: descargar a través del servidor si no se puede obtener URL directa
+    // Esto es menos eficiente pero funciona como respaldo
     try {
       const response: any = await drive.files.get(
         {
           fileId: videoId,
           alt: 'media',
+          acknowledgeAbuse: false,
         },
         { responseType: 'stream' }
       )
 
-      // Convertir el stream a buffer
+      // Convertir el stream a buffer (solo para archivos pequeños/medianos)
       const chunks: Buffer[] = []
-      const maxSize = 500 * 1024 * 1024 // 500MB límite aproximado
+      const maxSize = 500 * 1024 * 1024 // 500MB límite
       let totalSize = 0
 
       for await (const chunk of response.data as AsyncIterable<Buffer>) {
@@ -98,7 +126,7 @@ export async function POST(request: NextRequest) {
         totalSize += chunkBuffer.length
         
         if (totalSize > maxSize) {
-          throw new Error('El archivo es demasiado grande para descargar a través del servidor. Por favor, intenta descargarlo directamente desde Google Drive.')
+          throw new Error('El archivo es demasiado grande. Se recomienda usar la descarga directa.')
         }
         
         chunks.push(chunkBuffer)
@@ -116,15 +144,9 @@ export async function POST(request: NextRequest) {
     } catch (streamError: any) {
       console.error('Error en descarga por stream:', streamError)
       
-      // Si falla, intentar devolver URL directa como última opción
-      if (file.data.webContentLink) {
-        return NextResponse.json({
-          downloadUrl: file.data.webContentLink,
-          fileName: fileName || file.data.name || 'video',
-          useDirectDownload: true,
-          success: true,
-          message: 'Usa esta URL para descargar el archivo directamente',
-        })
+      // Si falla por permisos, proporcionar mensaje específico
+      if (streamError.code === 403 || streamError.message?.includes('permission') || streamError.message?.includes('permiso')) {
+        throw new Error('No tienes permisos para descargar este archivo. El propietario debe darte permisos de "Editor" o habilitar "Los visualizadores pueden descargar" en la configuración de compartir.')
       }
 
       throw streamError
@@ -132,15 +154,13 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error('Error al descargar video:', error)
     
-    // Proporcionar mensajes de error más específicos
+    // Mensajes de error específicos
     let errorMessage = 'Error al descargar el video'
     
     if (error.message?.includes('No autenticado') || error.code === 401) {
       errorMessage = 'No estás autenticado. Por favor, vuelve a autenticarte con Google.'
-    } else if (error.message?.includes('demasiado grande')) {
-      errorMessage = error.message
-    } else if (error.message?.includes('permission') || error.code === 403) {
-      errorMessage = 'No tienes permisos para descargar este archivo. Verifica que el archivo esté compartido contigo.'
+    } else if (error.message?.includes('permission') || error.code === 403 || error.message?.includes('permiso')) {
+      errorMessage = error.message || 'No tienes permisos para descargar este archivo.'
     } else if (error.message?.includes('not found') || error.code === 404) {
       errorMessage = 'El archivo no fue encontrado. Puede haber sido eliminado o movido.'
     } else if (error.message) {

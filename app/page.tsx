@@ -9,10 +9,10 @@ export default function Home() {
       <div className="container mx-auto px-4 py-8">
         <header className="text-center mb-8">
           <h1 className="text-4xl md:text-5xl font-bold text-gray-900 mb-2">
-            🎬 Descargador de Videos
+            📥 Descargador de Archivos
           </h1>
           <p className="text-lg text-gray-600">
-            Descarga videos de Google Drive organizados por carpetas
+            Descarga videos y PDFs de Google Drive organizados por carpetas
           </p>
         </header>
         <VideoDownloader />

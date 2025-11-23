@@ -1,32 +1,36 @@
 'use client'
 
 import { useState } from 'react'
-import { Folder, Video, Download, Search, Loader2, CheckCircle2, XCircle, FolderOpen } from 'lucide-react'
+import { Folder, Video, Download, Search, Loader2, CheckCircle2, XCircle, FolderOpen, FileText, Filter } from 'lucide-react'
 import VideoList from './VideoList'
 import AuthButton from './AuthButton'
 
-interface VideoItem {
+interface FileItem {
   id: string
   name: string
   mimeType: string
+  fileType: 'video' | 'pdf'
   size: string
   folderPath: string
   webViewLink: string
 }
 
 interface FolderStructure {
-  [key: string]: VideoItem[]
+  [key: string]: FileItem[]
 }
 
 export default function VideoDownloader() {
   const [folderUrl, setFolderUrl] = useState('')
-  const [videos, setVideos] = useState<VideoItem[]>([])
+  const [files, setFiles] = useState<FileItem[]>([])
+  const [videos, setVideos] = useState<FileItem[]>([])
+  const [pdfs, setPdfs] = useState<FileItem[]>([])
   const [folderStructure, setFolderStructure] = useState<FolderStructure>({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
-  const [stats, setStats] = useState({ total: 0, totalSize: 0, folders: 0 })
+  const [stats, setStats] = useState({ total: 0, videosCount: 0, pdfsCount: 0, totalSize: 0, folders: 0 })
   const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [filterType, setFilterType] = useState<'all' | 'video' | 'pdf'>('all')
 
   const extractFolderId = (url: string): string | null => {
     if (!url) return null
@@ -60,26 +64,40 @@ export default function VideoDownloader() {
     return `${size.toFixed(2)} ${units[unitIndex]}`
   }
 
-  const organizeVideosByFolder = (videos: VideoItem[]): FolderStructure => {
+  const organizeFilesByFolder = (files: FileItem[]): FolderStructure => {
     const structure: FolderStructure = {}
     
-    videos.forEach(video => {
-      const path = video.folderPath || 'Raíz'
+    files.forEach(file => {
+      const path = file.folderPath || 'Raíz'
       if (!structure[path]) {
         structure[path] = []
       }
-      structure[path].push(video)
+      structure[path].push(file)
     })
 
     return structure
   }
 
-  const calculateStats = (videos: VideoItem[]) => {
-    const total = videos.length
-    const totalSize = videos.reduce((sum, video) => sum + parseInt(video.size || '0'), 0)
-    const folders = new Set(videos.map(v => v.folderPath || 'Raíz')).size
+  const calculateStats = (files: FileItem[]) => {
+    const total = files.length
+    const videosCount = files.filter(f => f.fileType === 'video').length
+    const pdfsCount = files.filter(f => f.fileType === 'pdf').length
+    const totalSize = files.reduce((sum, file) => sum + parseInt(file.size || '0'), 0)
+    const folders = new Set(files.map(f => f.folderPath || 'Raíz')).size
 
-    return { total, totalSize, folders }
+    return { total, videosCount, pdfsCount, totalSize, folders }
+  }
+
+  const getFilteredFiles = (): FileItem[] => {
+    if (filterType === 'all') return files
+    if (filterType === 'video') return videos
+    if (filterType === 'pdf') return pdfs
+    return files
+  }
+
+  const getFilteredFolderStructure = (): FolderStructure => {
+    const filteredFiles = getFilteredFiles()
+    return organizeFilesByFolder(filteredFiles)
   }
 
   const handleSearch = async () => {
@@ -91,10 +109,12 @@ export default function VideoDownloader() {
     }
 
     setLoading(true)
-    setError(null)
-    setSuccess(false)
-    setVideos([])
-    setFolderStructure({})
+      setError(null)
+      setSuccess(false)
+      setFiles([])
+      setVideos([])
+      setPdfs([])
+      setFolderStructure({})
 
     try {
       // Crear un AbortController para manejar timeout
@@ -140,10 +160,17 @@ export default function VideoDownloader() {
       }
 
       setIsAuthenticated(true)
-      setVideos(data.videos || [])
-      const structure = organizeVideosByFolder(data.videos || [])
+      const allFiles = data.files || []
+      const videosList = data.videos || []
+      const pdfsList = data.pdfs || []
+      
+      setFiles(allFiles)
+      setVideos(videosList)
+      setPdfs(pdfsList)
+      
+      const structure = organizeFilesByFolder(allFiles)
       setFolderStructure(structure)
-      setStats(calculateStats(data.videos || []))
+      setStats(calculateStats(allFiles))
       setSuccess(true)
       
       // Mostrar tiempo de procesamiento si está disponible
@@ -164,24 +191,25 @@ export default function VideoDownloader() {
   }
 
   const handleDownloadAll = async () => {
-    if (videos.length === 0) return
+    const filesToDownload = getFilteredFiles()
+    if (filesToDownload.length === 0) return
 
     setLoading(true)
     setError(null)
 
     try {
-      for (const video of videos) {
+      for (const file of filesToDownload) {
         try {
           const response = await fetch('/api/download-video', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ videoId: video.id, fileName: video.name, folderPath: video.folderPath }),
+            body: JSON.stringify({ videoId: file.id, fileName: file.name, folderPath: file.folderPath }),
           })
 
           if (!response.ok) {
-            let errorMessage = `Error al descargar ${video.name}`
+            let errorMessage = `Error al descargar ${file.name}`
             try {
               const errorData = await response.json()
               errorMessage = errorData.error || errorMessage
@@ -196,9 +224,18 @@ export default function VideoDownloader() {
           
           if (contentType?.includes('application/json')) {
             const data = await response.json()
-            if (data.downloadUrl) {
-              // Abrir URL de descarga directa en nueva pestaña
-              window.open(data.downloadUrl, '_blank')
+            if (data.downloadUrl && data.useDirectDownload) {
+              // Crear enlace de descarga programático
+              const link = document.createElement('a')
+              link.href = data.downloadUrl
+              link.download = data.fileName || file.name
+              link.target = '_blank'
+              link.rel = 'noopener noreferrer'
+              
+              document.body.appendChild(link)
+              link.click()
+              document.body.removeChild(link)
+              
               // Pequeña pausa entre descargas para evitar saturar el navegador
               await new Promise(resolve => setTimeout(resolve, 500))
               continue
@@ -210,7 +247,7 @@ export default function VideoDownloader() {
           const url = window.URL.createObjectURL(blob)
           const a = document.createElement('a')
           a.href = url
-          a.download = video.name
+          a.download = file.name
           document.body.appendChild(a)
           a.click()
           window.URL.revokeObjectURL(url)
@@ -219,7 +256,7 @@ export default function VideoDownloader() {
           // Pequeña pausa entre descargas
           await new Promise(resolve => setTimeout(resolve, 500))
         } catch (err: any) {
-          console.error(`Error descargando ${video.name}:`, err)
+          console.error(`Error descargando ${file.name}:`, err)
           // Continuar con el siguiente video en lugar de detenerse
         }
       }
@@ -272,7 +309,7 @@ export default function VideoDownloader() {
               ) : (
                 <>
                   <Search className="w-5 h-5" />
-                  Buscar Videos
+                  Buscar Archivos
                 </>
               )}
             </button>
@@ -286,54 +323,111 @@ export default function VideoDownloader() {
           </div>
         )}
 
-        {success && videos.length > 0 && (
+        {success && files.length > 0 && (
           <div className="mt-4 p-4 bg-green-50 border border-green-200 rounded-lg flex items-center gap-2 text-green-700">
             <CheckCircle2 className="w-5 h-5" />
-            <span>Se encontraron {stats.total} videos en {stats.folders} {stats.folders === 1 ? 'carpeta' : 'carpetas'}</span>
+            <span>
+              Se encontraron {stats.total} archivos ({stats.videosCount} videos, {stats.pdfsCount} PDFs) 
+              en {stats.folders} {stats.folders === 1 ? 'carpeta' : 'carpetas'}
+            </span>
           </div>
         )}
       </div>
 
       {/* Estadísticas */}
-      {success && videos.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <div className="flex items-center gap-3">
-              <Video className="w-8 h-8 text-primary-600" />
-              <div>
-                <p className="text-sm text-gray-600">Total de Videos</p>
-                <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
-              </div>
+      {success && files.length > 0 && (
+        <div className="space-y-4 mb-6">
+          {/* Filtros por tipo */}
+          <div className="bg-white rounded-xl shadow-lg p-4">
+            <div className="flex items-center gap-4 flex-wrap">
+              <Filter className="w-5 h-5 text-gray-600" />
+              <span className="text-sm font-medium text-gray-700">Filtrar por tipo:</span>
+              <button
+                onClick={() => setFilterType('all')}
+                className={`px-4 py-2 rounded-lg transition-colors ${
+                  filterType === 'all'
+                    ? 'bg-primary-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                Todos ({stats.total})
+              </button>
+              <button
+                onClick={() => setFilterType('video')}
+                className={`px-4 py-2 rounded-lg transition-colors flex items-center gap-2 ${
+                  filterType === 'video'
+                    ? 'bg-primary-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                <Video className="w-4 h-4" />
+                Videos ({stats.videosCount})
+              </button>
+              <button
+                onClick={() => setFilterType('pdf')}
+                className={`px-4 py-2 rounded-lg transition-colors flex items-center gap-2 ${
+                  filterType === 'pdf'
+                    ? 'bg-primary-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                <FileText className="w-4 h-4" />
+                PDFs ({stats.pdfsCount})
+              </button>
             </div>
           </div>
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <div className="flex items-center gap-3">
-              <Folder className="w-8 h-8 text-primary-600" />
-              <div>
-                <p className="text-sm text-gray-600">Carpetas</p>
-                <p className="text-2xl font-bold text-gray-900">{stats.folders}</p>
+
+          {/* Estadísticas */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="bg-white rounded-xl shadow-lg p-6">
+              <div className="flex items-center gap-3">
+                <Folder className="w-8 h-8 text-primary-600" />
+                <div>
+                  <p className="text-sm text-gray-600">Total Archivos</p>
+                  <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
+                </div>
               </div>
             </div>
-          </div>
-          <div className="bg-white rounded-xl shadow-lg p-6">
-            <div className="flex items-center gap-3">
-              <Download className="w-8 h-8 text-primary-600" />
-              <div>
-                <p className="text-sm text-gray-600">Tamaño Total</p>
-                <p className="text-2xl font-bold text-gray-900">{formatSize(stats.totalSize)}</p>
+            <div className="bg-white rounded-xl shadow-lg p-6">
+              <div className="flex items-center gap-3">
+                <Video className="w-8 h-8 text-primary-600" />
+                <div>
+                  <p className="text-sm text-gray-600">Videos</p>
+                  <p className="text-2xl font-bold text-gray-900">{stats.videosCount}</p>
+                </div>
+              </div>
+            </div>
+            <div className="bg-white rounded-xl shadow-lg p-6">
+              <div className="flex items-center gap-3">
+                <FileText className="w-8 h-8 text-primary-600" />
+                <div>
+                  <p className="text-sm text-gray-600">PDFs</p>
+                  <p className="text-2xl font-bold text-gray-900">{stats.pdfsCount}</p>
+                </div>
+              </div>
+            </div>
+            <div className="bg-white rounded-xl shadow-lg p-6">
+              <div className="flex items-center gap-3">
+                <Download className="w-8 h-8 text-primary-600" />
+                <div>
+                  <p className="text-sm text-gray-600">Tamaño Total</p>
+                  <p className="text-2xl font-bold text-gray-900">{formatSize(stats.totalSize)}</p>
+                </div>
               </div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Lista de videos */}
-      {success && videos.length > 0 && (
+      {/* Lista de archivos */}
+      {success && files.length > 0 && (
         <div className="bg-white rounded-xl shadow-lg p-6">
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
               <FolderOpen className="w-6 h-6" />
-              Videos Organizados por Carpetas
+              {filterType === 'all' && 'Archivos Organizados por Carpetas'}
+              {filterType === 'video' && 'Videos Organizados por Carpetas'}
+              {filterType === 'pdf' && 'PDFs Organizados por Carpetas'}
             </h2>
             <button
               onClick={handleDownloadAll}
@@ -341,10 +435,10 @@ export default function VideoDownloader() {
               className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
             >
               <Download className="w-4 h-4" />
-              Descargar Todos
+              Descargar {filterType === 'all' ? 'Todos' : filterType === 'video' ? 'Videos' : 'PDFs'}
             </button>
           </div>
-          <VideoList folderStructure={folderStructure} formatSize={formatSize} />
+          <VideoList folderStructure={getFilteredFolderStructure()} formatSize={formatSize} />
         </div>
       )}
     </div>

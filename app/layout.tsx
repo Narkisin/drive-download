@@ -5,8 +5,8 @@ import './globals.css'
 const inter = Inter({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'Descargador de Videos de Google Drive',
-  description: 'Descarga videos de Google Drive organizados por carpetas',
+  title: 'Descargador de Videos y PDFs de Google Drive',
+  description: 'Descarga videos y PDFs de Google Drive organizados por carpetas',
 }
 
 export default function RootLayout({

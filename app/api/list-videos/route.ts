@@ -18,8 +18,27 @@ const VIDEO_MIMETYPES = [
   'video/x-ms-wmv',
 ]
 
+const PDF_MIMETYPES = [
+  'application/pdf',
+  'application/x-pdf',
+  'application/acrobat',
+  'applications/vnd.pdf',
+  'text/pdf',
+  'text/x-pdf',
+]
+
 function isVideo(mimeType: string): boolean {
   return mimeType.startsWith('video/') || VIDEO_MIMETYPES.includes(mimeType)
+}
+
+function isPDF(mimeType: string): boolean {
+  return mimeType === 'application/pdf' || PDF_MIMETYPES.includes(mimeType)
+}
+
+function getFileType(mimeType: string): 'video' | 'pdf' | 'other' {
+  if (isVideo(mimeType)) return 'video'
+  if (isPDF(mimeType)) return 'pdf'
+  return 'other'
 }
 
 function getOAuth2Client() {
@@ -60,14 +79,14 @@ async function getFolderName(drive: any, folderId: string): Promise<string> {
   }
 }
 
-async function listVideosInFolder(
+async function listFilesInFolder(
   drive: any,
   folderId: string,
   parentPath: string = '',
   depth: number = 0,
   maxDepth: number = 10
 ): Promise<any[]> {
-  const videos: any[] = []
+  const files: any[] = []
 
   // Limitar profundidad para evitar recursión infinita y timeouts
   if (depth > maxDepth) {
@@ -102,12 +121,13 @@ async function listVideosInFolder(
         if (mimeType === 'application/vnd.google-apps.folder') {
           foldersToProcess.push({ id: item.id, path: currentPath })
         }
-        // Si es un video, agregarlo directamente
-        else if (isVideo(mimeType)) {
-          videos.push({
+        // Si es un video o PDF, agregarlo directamente
+        else if (isVideo(mimeType) || isPDF(mimeType)) {
+          files.push({
             id: item.id,
             name: item.name,
             mimeType: mimeType,
+            fileType: getFileType(mimeType),
             size: item.size || '0',
             folderPath: currentPath,
             webViewLink: item.webViewLink || '',
@@ -126,18 +146,18 @@ async function listVideosInFolder(
     for (let i = 0; i < foldersToProcess.length; i += batchSize) {
       const batch = foldersToProcess.slice(i, i + batchSize)
       const subfolderPromises = batch.map(folder => 
-        listVideosInFolder(drive, folder.id, folder.path, depth + 1, maxDepth)
+        listFilesInFolder(drive, folder.id, folder.path, depth + 1, maxDepth)
       )
       const subfolderResults = await Promise.all(subfolderPromises)
-      subfolderResults.forEach(subfolderVideos => {
-        videos.push(...subfolderVideos)
+      subfolderResults.forEach(subfolderFiles => {
+        files.push(...subfolderFiles)
       })
     }
   } catch (error: any) {
     console.error(`Error al acceder a la carpeta ${folderId}:`, error.message)
   }
 
-  return videos
+  return files
 }
 
 export async function POST(request: NextRequest) {
@@ -169,14 +189,22 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Listar videos con límites de tiempo
-    const videos = await listVideosInFolder(drive, folderId)
+    // Listar archivos (videos y PDFs) con límites de tiempo
+    const files = await listFilesInFolder(drive, folderId)
     checkTimeout()
 
+    // Separar por tipo
+    const videos = files.filter(f => f.fileType === 'video')
+    const pdfs = files.filter(f => f.fileType === 'pdf')
+
     return NextResponse.json({ 
-      videos, 
+      files,
+      videos,
+      pdfs,
       success: true,
-      count: videos.length,
+      count: files.length,
+      videosCount: videos.length,
+      pdfsCount: pdfs.length,
       processingTime: Date.now() - startTime
     })
   } catch (error: any) {
@@ -194,7 +222,7 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json(
-      { error: error.message || 'Error al listar videos' },
+      { error: error.message || 'Error al listar archivos' },
       { status: 500 }
     )
   }

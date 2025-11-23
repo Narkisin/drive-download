@@ -1,12 +1,13 @@
 'use client'
 
 import { useState } from 'react'
-import { Folder, Video, Download, ChevronDown, ChevronRight } from 'lucide-react'
+import { Folder, Video, Download, ChevronDown, ChevronRight, FileText } from 'lucide-react'
 
 interface VideoItem {
   id: string
   name: string
   mimeType: string
+  fileType: 'video' | 'pdf'
   size: string
   folderPath: string
   webViewLink: string
@@ -60,17 +61,32 @@ export default function VideoList({ folderStructure, formatSize }: VideoListProp
         throw new Error(errorMessage)
       }
 
-      // Verificar si la respuesta es una redirección o JSON con URL directa
+      // Verificar si la respuesta es JSON con URL de descarga directa
       const contentType = response.headers.get('content-type')
       
-      if (response.redirected || contentType?.includes('application/json')) {
-        // Si es JSON, significa que tenemos una URL de descarga directa
+      if (contentType?.includes('application/json')) {
         const data = await response.json()
-        if (data.downloadUrl) {
-          // Abrir URL de descarga directa
-          window.open(data.downloadUrl, '_blank')
+        if (data.downloadUrl && data.useDirectDownload) {
+          // Crear un enlace de descarga programático para mejor compatibilidad
+          const link = document.createElement('a')
+          link.href = data.downloadUrl
+          link.download = data.fileName || video.name
+          link.target = '_blank'
+          link.rel = 'noopener noreferrer'
+          
+          // Agregar al DOM temporalmente para activar la descarga
+          document.body.appendChild(link)
+          link.click()
+          document.body.removeChild(link)
+          
           return
         }
+      }
+      
+      // Si hubo una redirección, seguir el enlace
+      if (response.redirected) {
+        window.location.href = response.url
+        return
       }
 
       // Si es un blob (descarga a través del servidor)
@@ -130,10 +146,16 @@ export default function VideoList({ folderStructure, formatSize }: VideoListProp
                     className="px-4 py-3 hover:bg-gray-50 transition-colors flex items-center justify-between"
                   >
                     <div className="flex items-center gap-3 flex-1 min-w-0">
-                      <Video className="w-5 h-5 text-primary-600 flex-shrink-0" />
+                      {video.fileType === 'video' ? (
+                        <Video className="w-5 h-5 text-primary-600 flex-shrink-0" />
+                      ) : (
+                        <FileText className="w-5 h-5 text-red-600 flex-shrink-0" />
+                      )}
                       <div className="flex-1 min-w-0">
                         <p className="font-medium text-gray-900 truncate">{video.name}</p>
-                        <p className="text-sm text-gray-500">{formatSize(parseInt(video.size || '0'))}</p>
+                        <p className="text-sm text-gray-500">
+                          {formatSize(parseInt(video.size || '0'))} • {video.fileType === 'video' ? 'Video' : 'PDF'}
+                        </p>
                       </div>
                     </div>
                     <button
